@@ -13,16 +13,28 @@ saves/
 !assets/icon/*.png
 !assets/signature.png
 !docs/screenshots/*.png
+!webos/*.png
 *.wav
 .DS_Store
 dist/
+out/
+*.ipk
 rom.cfg
 src/gen/
 recomp/funcs.h
 *.sfc
 *.smc
 *.srm
+*.tmp
+*.log
+*.csv
+*.key
+*.pem
+*.pkcs*
+last_run_report.json
 __pycache__/
+# WebOS build and toolchain output
+build_webos/
 # Android build outputs and the local SDK path
 android/local.properties
 android/.gradle/
@@ -30,3 +42,7 @@ android/build/
 android/app/build/
 android/app/.cxx/
 !android/app/src/main/res/**/*.png
+# IDE and editor settings
+.vscode/
+.idea/
+*.user

@@ -32,8 +32,13 @@ endif()
 # gate all hang off this one switch; a build without it cannot exchange mods
 # with a peer that has them, and the framework says so at every lobby init.
 # Must precede the include: runner.cmake reads it to add the loader sources.
-set(SNESRECOMP_ENABLE_MODS ON CACHE BOOL
-    "Mod package loader + trusted plugins (required for every title)" FORCE)
+if(WEBOS)
+    set(SNESRECOMP_ENABLE_MODS OFF CACHE BOOL
+        "Mod package loader + trusted plugins (disabled on webOS)" FORCE)
+else()
+    set(SNESRECOMP_ENABLE_MODS ON CACHE BOOL
+        "Mod package loader + trusted plugins (required for every title)" FORCE)
+endif()
 include(${SNESRECOMP_ROOT}/runner/runner.cmake)
 
 set(SMAS_SOURCES
@@ -127,7 +132,7 @@ endif()
 include(${RECOMP_UI_ROOT}/recomp_ui.cmake)
 # shortcut: Android has no launcher, Esc menu or rebuild wizard yet (they draw with desktop OpenGL);
 # it boots straight into the game. Add them when the touch UI lands.
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT WEBOS)
 # BOXART stages launcher_assets/img/boxart.tga beside the exe; the launcher
 # shows assets/img/boxart.tga by default. EXISTS-guarded in recomp_ui.cmake,
 # so this configures cleanly before any art is fetched.
@@ -161,7 +166,7 @@ add_custom_command(TARGET SuperMarioAllStarsRecomp POST_BUILD
 
 # The in-game menu (Esc): recomp-ui's runtime menu drawn by Dear ImGui on a
 # private hidden OpenGL context, then blended over the frozen game by the host.
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT WEBOS)
 target_sources(SuperMarioAllStarsRecomp PRIVATE
     ${SNESRECOMP_ROOT}/host/snes_runtime_menu_gl.cpp)
 target_compile_definitions(SuperMarioAllStarsRecomp PRIVATE SNESRECOMP_RUNTIME_MENU=1)

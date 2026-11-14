@@ -1,0 +1,15 @@
+{
+  "id": "com.tanooki.smas",
+  "version": "1.0.0",
+  "vendor": "Tanooki Studios",
+  "type": "native",
+  "main": "SuperMarioAllStars",
+  "title": "Super Mario All-Stars",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "iconColor": "#E52521",
+  "appDescription": "Super Mario All-Stars for LG webOS",
+  "cloudgame_active": true,
+  "useAllMouseButtons": true,
+  "useAllKeyboardKeys": true
+}

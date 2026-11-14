@@ -2,11 +2,11 @@
   <img src="assets/icon/smas-256.png" width="128" alt="Super Mario All-Stars icon">
 </p>
 
-<h1 align="center">Super Mario All-Stars, native for Mac, Windows, Linux and Android</h1>
+<h1 align="center">Super Mario All-Stars, native for Mac, Windows, Linux, Android and LG webOS</h1>
 
 <p align="center">
   The 1993 Super Nintendo collection (Super Mario Bros., The Lost Levels, Super Mario Bros. 2 and 3),<br>
-  rebuilt as a real program for your computer. Crisp pixels at any size, a proper launcher, controller support, and cheats.<br>
+  rebuilt as a real program for your computer and TV. Crisp pixels at any size, a proper launcher, controller support, and cheats.<br>
   <b>Free. Bring your own copy of the game.</b>
 </p>
 
@@ -20,6 +20,7 @@
 | **Windows** (64-bit) | [**SuperMarioAllStars-Windows.zip**](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/releases/latest/download/SuperMarioAllStars-Windows.zip) | |
 | **Linux** (64-bit, most desktops from 2020 on) | [**SuperMarioAllStars-Linux.tar.gz**](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/releases/latest/download/SuperMarioAllStars-Linux.tar.gz) | |
 | **Android** (64-bit phones and tablets, Android 7+) | [**SuperMarioAllStars-Android.apk**](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/releases/latest/download/SuperMarioAllStars-Android.apk) | Not on Google Play: install the APK |
+| **LG webOS** (LG Smart TV webOS 4.x+, ARMv7) | [**com.tanooki.smas_1.0.0_arm.ipk**](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/releases/latest/download/com.tanooki.smas_1.0.0_arm.ipk) | Install via `ares-install` or Dev Mode |
 
 Every version and its notes are on the [Releases page](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/releases).
 
@@ -120,6 +121,7 @@ cmake --build build
 ```
 
 Android: `tools/make_android.sh` (signed release APK; the Gradle project is in `android/`).
+webOS (LG Smart TV): `tools/make_webos.sh` or `tools/make_webos.ps1` (packages `out/com.tanooki.smas_1.0.0_arm.ipk` via webOS CLI).
 Release builds: `tools/make_app.sh --notarize` (Mac), `tools/make_windows_zip.sh` (Windows, cross-built on a Mac),
 `tools/make_linux.sh` (Linux, built in an Ubuntu 20.04 container). Screenshots: `tools/capture-screenshots.sh`.
 
