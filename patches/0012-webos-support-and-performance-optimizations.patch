@@ -89,17 +89,53 @@ index 2d1f2e08..05f71421 100644
    }
    g_refresh_charged_upto = g_cpu.master_cycles;
 diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
-index a56966b7..05231b15 100644
+index a56966b7..0d4be1c1 100644
 --- a/runner/src/common_rtl.c
 +++ b/runner/src/common_rtl.c
-@@ -2540,8 +2540,38 @@ static void ensure_save_root(const char *root) {
+@@ -2506,8 +2506,12 @@ void RtlRenderAudio(int16 *audio_buffer, int samples, int channels) {
+  * cannot overwrite personal progress. Older builds named the SRAM after the
+  * game's internal title ("smw" for every title); RtlMigrateLegacySram copies
+  * that forward the first time the generic name is used under the main root. */
+-static char s_save_root[96] = "saves";
+-static char s_quick_save_root[96];
++#ifdef __WEBOS__
++static char s_save_root[128] = "/media/developer/temp/com.tanooki.smas/saves";
++#else
++static char s_save_root[128] = "saves";
++#endif
++static char s_quick_save_root[128];
+ 
+ void RtlSetQuickSaveRoot(const char *root) {
+   snprintf(s_quick_save_root, sizeof(s_quick_save_root), "%s", root ? root : "");
+@@ -2517,9 +2521,13 @@ void RtlSetQuickSaveRoot(const char *root) {
+ }
+ 
+ void RtlSetSaveRoot(const char *root) {
+-  if (!root || !root[0])
++  if (!root || !root[0]) {
++#ifdef __WEBOS__
++    snprintf(s_save_root, sizeof(s_save_root), "/media/developer/temp/com.tanooki.smas/saves");
++#else
+     snprintf(s_save_root, sizeof(s_save_root), "saves");
+-  else {
++#endif
++  } else {
+     snprintf(s_save_root, sizeof(s_save_root), "%s", root);
+     /* Trim trailing slash */
+     size_t n = strlen(s_save_root);
+@@ -2540,8 +2548,43 @@ static void ensure_save_root(const char *root) {
    _mkdir(root);
  #else
    if (strncmp(root, "saves/", 6) == 0)
 -    mkdir("saves", 0755);
 -  mkdir(root, 0755);
 +    mkdir("saves", 0777);
-+  mkdir(root, 0777);
++  char d[128];
++  snprintf(d, sizeof(d), "%s", root);
++  for (char *p = d + 1; *p; ++p) {
++    if (*p == '/') { *p = 0; mkdir(d, 0777); *p = '/'; }
++  }
++  mkdir(d, 0777);
 +  /* Test if directory is writable; if not and we are on default "saves", try fallback */
 +  char probe[128];
 +  snprintf(probe, sizeof(probe), "%s/.probe", root);
@@ -113,12 +149,12 @@ index a56966b7..05231b15 100644
 +      "/tmp/com.tanooki.smas/saves"
 +    };
 +    for (int i = 0; i < 2; i++) {
-+      char d[128];
-+      snprintf(d, sizeof(d), "%s", fallbacks[i]);
-+      for (char *p = d + 1; *p; ++p) {
-+        if (*p == '/') { *p = 0; mkdir(d, 0777); *p = '/'; }
++      char fb[128];
++      snprintf(fb, sizeof(fb), "%s", fallbacks[i]);
++      for (char *p = fb + 1; *p; ++p) {
++        if (*p == '/') { *p = 0; mkdir(fb, 0777); *p = '/'; }
 +      }
-+      mkdir(d, 0777);
++      mkdir(fb, 0777);
 +      snprintf(probe, sizeof(probe), "%s/.probe", fallbacks[i]);
 +      FILE *f2 = fopen(probe, "wb");
 +      if (f2) {
@@ -133,6 +169,22 @@ index a56966b7..05231b15 100644
  #endif
  }
  
+@@ -2604,9 +2647,15 @@ void RtlReadSram(void) {
+   if (!g_sram || g_sram_size <= 0)
+     return;
+   char path[128];
++  RtlEnsureSaveDir();
+   RtlMigrateLegacySram(g_rtl_game_info->title);
+   RtlSramFilePath(path, sizeof(path));
+   FILE *f = fopen(path, "rb");
++#ifdef __WEBOS__
++  if (!f) {
++    f = fopen("/media/developer/temp/com.tanooki.smas/saves/save.srm", "rb");
++  }
++#endif
+   if (f) {
+     if (fread(g_sram, 1, g_sram_size, f) != g_sram_size)
+       fprintf(stderr, "Error reading %s\n", path);
 diff --git a/runner/src/cpu_state.c b/runner/src/cpu_state.c
 index 57fe6bc0..75d58215 100644
 --- a/runner/src/cpu_state.c
