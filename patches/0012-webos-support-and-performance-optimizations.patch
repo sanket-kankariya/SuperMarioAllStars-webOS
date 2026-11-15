@@ -2224,7 +2224,7 @@ index 81512133..850c6856 100644
  
  Interp816 *interp816_init(void *mem, Interp816ReadHandler read,
 diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
-index c1e48ebb..b4499644 100644
+index c1e48ebb..654496bf 100644
 --- a/runner/src/snes/interp_bridge.c
 +++ b/runner/src/snes/interp_bridge.c
 @@ -61,7 +61,7 @@ static uint64_t bridge_bounce_flush_thresh(void) {
@@ -2312,7 +2312,17 @@ index c1e48ebb..b4499644 100644
      const int wlog_state_sync = getenv("SNESRECOMP_WLOG_STATE") != NULL;
  
      sync_cpu_to_interp(cpu, &in);
-@@ -1553,6 +1585,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1544,7 +1576,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+ 
+     typedef struct QuiescentState {
+         uint32_t pc;
+-        uint16_t a, x, y, sp, dp;
++        uint32_t reg_hash;
++        uint16_t dp;
+         uint8_t db, k, c, z, v, n, i, d, mf, xf, e;
+         uint64_t write_epoch;
+         uint64_t continuous_read_epoch;
+@@ -1553,6 +1586,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
      } QuiescentState;
      QuiescentState qring[64];
      memset(qring, 0, sizeof qring);
@@ -2320,7 +2330,7 @@ index c1e48ebb..b4499644 100644
      /* Stable-poll detector state: the architectural state at the last few
       * loop heads this frame branched back to (see the detector below). */
      typedef struct PollHeadState {
-@@ -1643,17 +1676,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1643,17 +1677,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the CPU H/V comparator or a coprocessor asserts IRQ; otherwise a
           * perfectly live hardware-poll loop can monopolize the bridge and
           * starve the handler forever. */
@@ -2343,7 +2353,7 @@ index c1e48ebb..b4499644 100644
              lle_resume_set(pc_before, INTERP_RESUME_SITE_IRQ_PENDING, in.sp);
              sync_interp_to_cpu(&in,cpu);
              bridge_apu_flush(cpu);
-@@ -1670,9 +1698,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1670,9 +1699,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the wait; it executes the LDA $00D9 / BEQ loop with the same master
           * timing and IRQ/deadline sampling, but avoids the full interpreter bus
           * dispatch overhead in the battle vIRQ case. */
@@ -2355,7 +2365,7 @@ index c1e48ebb..b4499644 100644
              g_snes->vIrqEnabled && g_snes->vTimer == 216u) {
              static int s_d9_bytes_ok = -1;
              if (s_d9_bytes_ok < 0) {
-@@ -1773,7 +1801,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1773,7 +1802,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * equals the sum of per-opcode advances), so jumping the beam to
           * the natural exit point and flushing the skipped SPC time is
           * state-exact. Disabled with SNESRECOMP_NO_VBLANK_FF=1. */
@@ -2365,7 +2375,7 @@ index c1e48ebb..b4499644 100644
              ((pc_before == 0xC8F425u || pc_before == 0xC8F42Au ||
                pc_before == 0xC8F40Fu || pc_before == 0xC8F414u ||
                pc_before == 0xCC0538u || pc_before == 0xCC053Du ||
-@@ -1926,52 +1955,48 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1926,52 +1956,47 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              }
          }
          if (auto_quiescent) {
@@ -2412,12 +2422,12 @@ index c1e48ebb..b4499644 100644
 -                        return 1;
 +            uint64_t bit = 1ULL << (pc_before & 63);
 +            unsigned int prev_repeats = 0;
++            const uint32_t cur_hash = in.a ^ ((uint32_t)in.x << 16) ^ ((uint32_t)in.y << 8) ^ (uint32_t)in.sp;
 +            if (__builtin_expect((q_pc_filter & bit) != 0, 0)) {
 +                for (unsigned qi = 0; qi < 64; qi++) {
 +                    QuiescentState *old = &qring[qi];
-+                    if (old->pc == pc_before && old->step && (steps - old->step <= 256) &&
-+                        old->a == in.a && old->x == in.x && old->y == in.y &&
-+                        old->sp == in.sp && old->dp == in.dp && old->db == in.db &&
++                    if (old->pc == pc_before && old->reg_hash == cur_hash && old->step && (steps - old->step <= 256) &&
++                        old->dp == in.dp && old->db == in.db &&
 +                        old->k == in.k && old->c == in.c && old->z == in.z &&
 +                        old->v == in.v && old->n == in.n && old->i == in.i &&
 +                        old->d == in.d && old->mf == in.mf && old->xf == in.xf &&
@@ -2440,8 +2450,7 @@ index c1e48ebb..b4499644 100644
 -            qring[steps & 63]=now;
 +            unsigned slot_idx = steps & 63;
 +            QuiescentState *slot = &qring[slot_idx];
-+            slot->pc = pc_before; slot->a = in.a; slot->x = in.x; slot->y = in.y;
-+            slot->sp = in.sp; slot->dp = in.dp; slot->db = in.db; slot->k = in.k;
++            slot->pc = pc_before; slot->reg_hash = cur_hash; slot->dp = in.dp; slot->db = in.db; slot->k = in.k;
 +            slot->c = in.c; slot->z = in.z; slot->v = in.v; slot->n = in.n; slot->i = in.i;
 +            slot->d = in.d; slot->mf = in.mf; slot->xf = in.xf; slot->e = in.e;
 +            slot->write_epoch = g_interp_bridge_write_epoch; slot->step = steps;
@@ -2707,6 +2716,22 @@ index c1e48ebb..b4499644 100644
              /* Cooperative-scheduler (yield_pc) mode bounces too (fiber-free
               * rich-LLE, docs/LLE_SCHEDULER.md): a bounced body that reaches a
               * yield primitive no longer corrupts the paired-call stack — its
+diff --git a/runner/src/snes_rewind.c b/runner/src/snes_rewind.c
+index 35076582..1f467c35 100644
+--- a/runner/src/snes_rewind.c
++++ b/runner/src/snes_rewind.c
+@@ -93,6 +93,11 @@ void snes_rewind_configure(void) {
+     if (s_configured) return;
+     s_configured = 1;
+ 
++#ifdef __WEBOS__
++    s_enabled = 0;
++    return;
++#endif
++
+     if (s_host_enabled == 0) { s_enabled = 0; return; }
+     off = getenv("SNESRECOMP_REWIND");
+     if (off && off[0] == '0') { s_enabled = 0; return; }
 diff --git a/runner/src/widescreen.c b/runner/src/widescreen.c
 index 3d677074..1329d9c2 100644
 --- a/runner/src/widescreen.c
