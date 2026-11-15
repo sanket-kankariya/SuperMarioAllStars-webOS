@@ -203,7 +203,7 @@ index c2a9529f..4a2818c8 100644
  }
  
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3bc39053..7b6cec13 100644
+index 3bc39053..df2eb6f8 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
 @@ -85,6 +85,10 @@
@@ -226,7 +226,77 @@ index 3bc39053..7b6cec13 100644
  void OpenGLRenderer_Create(struct RendererFuncs *funcs);
  #include "opengl.h"   /* snesrecomp_opengl_set_vsync */
  #endif
-@@ -396,11 +400,18 @@ static int VSyncInterval(void) {
+@@ -360,6 +364,69 @@ static void WaitUntil(double deadline) {
+   }
+   ProfileEnd(kProfileWait, profile_start);
+ }
++
++#ifdef __WEBOS__
++unsigned s_live_audio_underruns = 0;
++extern void interp_bridge_get_top_pcs(char *buf, size_t max_len);
++
++static void LogLivePerfTick(unsigned frameCtr) {
++  static double last_log_time = 0;
++  static double prev_totals[kProfileCount];
++  static unsigned prev_frame = 0;
++  static unsigned long long prev_steps = 0;
++  static FILE *s_live_log = NULL;
++
++  if (!s_live_log) {
++    s_live_log = fopen("/tmp/smas_live_perf.log", "w");
++  }
++
++  double now = MonotonicSeconds();
++  if (last_log_time == 0) {
++    last_log_time = now;
++    prev_frame = frameCtr;
++    extern unsigned long long g_interp_bridge_steps;
++    prev_steps = g_interp_bridge_steps;
++    for (int i = 0; i < kProfileCount; ++i) prev_totals[i] = g_timings[i].total;
++    return;
++  }
++
++  if (frameCtr - prev_frame >= 60) {
++    double elapsed = now - last_log_time;
++    double frames = (double)(frameCtr - prev_frame);
++    double fps = elapsed > 0 ? (frames / elapsed) : 0;
++    
++    double guest_ms = (g_timings[kProfileGuest].total - prev_totals[kProfileGuest]) * 1000.0 / frames;
++    double raster_ms = (g_timings[kProfileRaster].total - prev_totals[kProfileRaster]) * 1000.0 / frames;
++    double present_ms = (g_timings[kProfilePresent].total - prev_totals[kProfilePresent]) * 1000.0 / frames;
++    double wait_ms = (g_timings[kProfileWait].total - prev_totals[kProfileWait]) * 1000.0 / frames;
++    
++    extern unsigned long long g_interp_bridge_steps;
++    unsigned steps = (unsigned)(g_interp_bridge_steps - prev_steps);
++    unsigned steps_per_frame = (unsigned)(steps / frames);
++
++    char top_pc_str[128] = "";
++    interp_bridge_get_top_pcs(top_pc_str, sizeof(top_pc_str));
++
++    const char *mode_name = "Menu";
++    if (g_cpu.PB >= 0x01 && g_cpu.PB <= 0x05) mode_name = "SMB1";
++    else if (g_cpu.PB >= 0x06 && g_cpu.PB <= 0x0F) mode_name = "LostLevels";
++    else if (g_cpu.PB >= 0x10 && g_cpu.PB <= 0x1F) mode_name = "SMB2";
++    else if (g_cpu.PB >= 0x20) mode_name = "SMB3";
++
++    if (s_live_log) {
++      fprintf(s_live_log, "frame=%5u | [%-10s] | FPS=%5.1f | guest=%4.1fms | raster=%4.1fms | pres=%4.1fms | wait=%4.1fms | under=%u | steps/f=%5u | %s\n",
++              frameCtr, mode_name, fps, guest_ms, raster_ms, present_ms, wait_ms, s_live_audio_underruns, steps_per_frame, top_pc_str);
++      fflush(s_live_log);
++    }
++    s_live_audio_underruns = 0;
++
++    last_log_time = now;
++    prev_frame = frameCtr;
++    prev_steps = g_interp_bridge_steps;
++    for (int i = 0; i < kProfileCount; ++i) prev_totals[i] = g_timings[i].total;
++  }
++}
++#endif
+ static double DisplayRefresh(void) {
+   if (!g_window) return 60;
+ #if SNESRECOMP_SDL3
+@@ -396,11 +463,18 @@ static int VSyncInterval(void) {
  
  static int WindowBaseWidth(int frame_w) {
    if (g_game->window_base_width) return g_game->window_base_width(frame_w);
@@ -245,7 +315,7 @@ index 3bc39053..7b6cec13 100644
    return 240;
  }
  
-@@ -426,8 +437,12 @@ static int g_frozen_w, g_frozen_h;
+@@ -426,8 +500,12 @@ static int g_frozen_w, g_frozen_h;
  static unsigned g_present_frame;
  
  #ifndef SNESRECOMP_FRAME_STAGING_HLE
@@ -258,7 +328,7 @@ index 3bc39053..7b6cec13 100644
  #if defined(SNESRECOMP_HOST_HAS_BLEND) || SNESRECOMP_FRAME_STAGING_HLE
  /* Compose where reads are cheap, then upload with a write-only row copy.
   * The frozen overlay snapshot and optional OSD/blend read this frame. */
-@@ -512,7 +527,7 @@ static void RendererEnumerate(void) {
+@@ -512,7 +590,7 @@ static void RendererEnumerate(void) {
    snprintf(g_renderer_id[0], kRendererNameMax, "auto");
    snprintf(g_renderer_label[0], kRendererNameMax, "Auto");
    g_renderer_count = 1;
@@ -267,7 +337,7 @@ index 3bc39053..7b6cec13 100644
    snprintf(g_renderer_id[1], kRendererNameMax, "opengl");
    snprintf(g_renderer_label[1], kRendererNameMax, "OpenGL");
    g_renderer_count = 2;
-@@ -523,9 +538,14 @@ static void RendererEnumerate(void) {
+@@ -523,9 +601,14 @@ static void RendererEnumerate(void) {
      if (!id || !id[0]) continue;
      /* opengles2 reaches the same hardware as OpenGL through a smaller API;
       * SDL's opengl driver is the native presenter's twin. Neither is a
@@ -283,7 +353,7 @@ index 3bc39053..7b6cec13 100644
      snprintf(g_renderer_id[g_renderer_count], kRendererNameMax, "%s", id);
      snprintf(g_renderer_label[g_renderer_count], kRendererNameMax, "%s", RendererPretty(id));
      g_renderer_count++;
-@@ -1361,6 +1381,7 @@ static void DrawPpuFrameWithPerf(void) {
+@@ -1361,6 +1444,7 @@ static void DrawPpuFrameWithPerf(void) {
     * from a modal loop pushes an interrupt frame every 8ms into a guest that
     * is not executing. That is what locked Super Metroid up when the
     * save-state browser was opened. */
@@ -291,7 +361,7 @@ index 3bc39053..7b6cec13 100644
    {
      const int rows = g_snes_height * render_scale;
      const int row_bytes = g_snes_width * render_scale * 4;
-@@ -1373,6 +1394,7 @@ static void DrawPpuFrameWithPerf(void) {
+@@ -1373,6 +1457,7 @@ static void DrawPpuFrameWithPerf(void) {
        g_frozen_h = rows;
      }
    }
@@ -299,7 +369,7 @@ index 3bc39053..7b6cec13 100644
    ComposeOsd(pixel_buffer, pitch, g_snes_width * render_scale,
               g_snes_height * render_scale, 2);
    /* Use the same completed simulation index as the common WRAM dumper. */
-@@ -2033,6 +2055,371 @@ static void RunRewindLoop(bool *running) {
+@@ -2033,6 +2118,371 @@ static void RunRewindLoop(bool *running) {
    GameReset();
  }
  
@@ -671,7 +741,17 @@ index 3bc39053..7b6cec13 100644
  /* ── Audio ────────────────────────────────────────────────────────────────── */
  
  static SDL_mutex *g_audio_mutex;
-@@ -2209,9 +2596,16 @@ static bool SdlRenderer_Init(SDL_Window *window) {
+@@ -2118,6 +2568,9 @@ static void FillAudioBuffer(Uint8 *stream, int len) {
+     if (g_audiobuffer_end - g_audiobuffer_cur == 0) {
+       uint32_t available = dsp_available(g_snes->apu->dsp);
+       if (!g_audio_primed && available < HOST_AUDIO_PREFILL) {
++#ifdef __WEBOS__
++        s_live_audio_underruns++;
++#endif
+         /* Startup/save-load starvation needs a cushion before playback
+          * resumes. Retain all native PCM; count the undelivered output just
+          * like any other underrun rather than hiding it from diagnostics. */
+@@ -2209,9 +2662,16 @@ static bool SdlRenderer_Init(SDL_Window *window) {
        g_window, want_software,
        /*vsync=*/VSyncInterval());
    if (renderer == NULL) {
@@ -688,7 +768,7 @@ index 3bc39053..7b6cec13 100644
    if (kDebugFlag || HostGetenv("HOST_PROFILE") || HostGetenv("FRAME_TIMING")) {
      const char *name = snesrecomp_sdl_renderer_name(renderer);
      printf("Renderer: %s (vsync=%d display_hz=%.3f simulation_hz=%.6f)\n",
-@@ -2262,10 +2656,17 @@ static void SdlRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
+@@ -2262,10 +2722,17 @@ static void SdlRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
    snesrecomp_sdl_set_texture_opaque(g_texture);
    int output_width = 0, output_height = 0;
    SdlRenderer_GetOutputSize(&output_width, &output_height);
@@ -707,7 +787,7 @@ index 3bc39053..7b6cec13 100644
    if (g_game->compute_viewport)
      g_game->compute_viewport(width, height, output_width, output_height, &viewport);
    g_sdl_present_rect.x = viewport.x;
-@@ -2284,10 +2685,49 @@ static void SdlRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
+@@ -2284,10 +2751,49 @@ static void SdlRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pi
  
  static void SdlRenderer_EndDraw(void) {
    SDL_UnlockTexture(g_texture);
@@ -757,7 +837,7 @@ index 3bc39053..7b6cec13 100644
    SDL_RenderPresent(g_renderer);
  }
  
-@@ -2643,6 +3083,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -2643,6 +3149,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
    ls->fullscreen    = g_config.fullscreen;
    ls->ignore_aspect = g_config.ignore_aspect_ratio;
    ls->linear_filter = g_config.linear_filtering;
@@ -765,7 +845,7 @@ index 3bc39053..7b6cec13 100644
    ls->aspect_index = SnesDisplayAspect_Clamp(g_config.display_aspect);
    if (g_config.shader)
      snprintf(ls->shader_path, sizeof(ls->shader_path), "%s", g_config.shader);
-@@ -2656,7 +3097,8 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -2656,7 +3163,8 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
     * unconditionally is what turned "player 2 on the keyboard" into
     * "player 2 unassigned" on every relaunch. */
    ls->player_src[0] = ConfigHasPlayerSource(0) ? g_config.player_src[0]
@@ -775,7 +855,7 @@ index 3bc39053..7b6cec13 100644
    ls->player_src[1] = ConfigHasPlayerSource(1) ? g_config.player_src[1]
                                                 : (g_config.enable_gamepad[1] ? 2 : 0);
    for (int seat = 2; seat < kSnesHostPadSeats && seat < RECOMP_LAUNCHER_MAX_PLAYERS; ++seat)
-@@ -2734,6 +3176,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -2734,6 +3242,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
    }
    /* Rewind rows. The runtime has always had the ring; without this the
     * player has no way to size it or switch it off. */
@@ -783,7 +863,7 @@ index 3bc39053..7b6cec13 100644
    gi->has_rewind_depth = game->rewind_settings ? 1 : 0;
    gi->has_run_ahead    = 1;   /* the runtime snapshots a machine in a frame */
    gi->has_vsync        = 1;
-@@ -2766,6 +3209,15 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -2766,6 +3275,15 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
    if (!in_session)
      snesrecomp_codegen_host_autowire(gi, gi->name);
  #endif
@@ -799,7 +879,7 @@ index 3bc39053..7b6cec13 100644
    if (game->configure_launcher) game->configure_launcher(gi);
  }
  
-@@ -2780,6 +3232,7 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
+@@ -2780,6 +3298,7 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
    g_config.window_scale        = (uint8)ls->window_scale;
    g_config.fullscreen          = (uint8)ls->fullscreen;
    g_config.ignore_aspect_ratio = ls->ignore_aspect != 0;
@@ -807,7 +887,7 @@ index 3bc39053..7b6cec13 100644
    g_config.linear_filtering    = ls->linear_filter != 0;
    if (game->display_aspect_supported)
      g_config.display_aspect = (uint8)SnesDisplayAspect_Clamp(ls->aspect_index);
-@@ -2796,7 +3249,8 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
+@@ -2796,7 +3315,8 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
      /* Seats past the game's count are not on the launcher's page; keep them. */
      if (seat >= 2 && seat >= HostConfiguredSeats()) break;
      g_config.player_src[seat]     = ls->player_src[seat];
@@ -817,7 +897,7 @@ index 3bc39053..7b6cec13 100644
    }
    g_config.gamepad_deadzone    = (ls->deadzone[0] * 32767 + 50) / 100;
    g_config.skip_launcher       = ls->skip_launcher != 0;
-@@ -2856,7 +3310,7 @@ static void ApplyLiveSettings(const Config *before) {
+@@ -2856,7 +3376,7 @@ static void ApplyLiveSettings(const Config *before) {
        g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
      ChangeWindowScale(0);
    }
@@ -826,7 +906,7 @@ index 3bc39053..7b6cec13 100644
    snesrecomp_opengl_set_vsync(VSyncInterval());
  #endif
    if (g_renderer_funcs.Reconfigure) g_renderer_funcs.Reconfigure();
-@@ -3052,7 +3506,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3052,7 +3572,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
    g_simulation_hz = game->simulation_hz > 0 ? game->simulation_hz : SNES_HOST_NTSC_HZ;
    g_snes_width = game->frame_width > 0 ? game->frame_width : 256;
    g_snes_height = game->frame_height > 0 ? game->frame_height : 224;
@@ -835,7 +915,7 @@ index 3bc39053..7b6cec13 100644
    snesrecomp_opengl_set_viewport(game->compute_viewport);
  #endif
    const char *build_version = game->build_version ? game->build_version : "dev";
-@@ -3074,6 +3528,15 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3074,6 +3594,15 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
      if (storage) chdir(storage);
    }
  #endif
@@ -851,7 +931,7 @@ index 3bc39053..7b6cec13 100644
  #ifdef _WIN32
    SetUnhandledExceptionFilter(seh_handler);
    /* Suppress the Windows error dialog so SEH unwinds straight to our
-@@ -3147,6 +3610,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3147,6 +3676,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
    if (game->in_game_launcher) ConfigUseInGameLauncherDefaults();
    /* Before parsing: default [GamepadMap] rows exist for each routed seat. */
    ConfigSetPadSeats(HostConfiguredSeats());
@@ -859,7 +939,7 @@ index 3bc39053..7b6cec13 100644
    ParseConfigFile(config_file);
    g_active_config_file = config_file;
    /* Local overrides (gitignored). Last parser to set a key wins. */
-@@ -3283,6 +3747,19 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3283,6 +3813,19 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
          }
        }
  
@@ -879,7 +959,7 @@ index 3bc39053..7b6cec13 100644
        if (want_launcher) {
          host_report_breadcrumb("launcher: opening GUI");
          RecompLauncherCSettings ls;
-@@ -3479,6 +3956,16 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3479,6 +4022,16 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
      g_config.audio_samples = kDefaultSamples;
  
    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -896,7 +976,7 @@ index 3bc39053..7b6cec13 100644
  
    // set up SDL
    SDL_SetMainReady();
-@@ -3489,6 +3976,23 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3489,6 +4042,23 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
      printf("Failed to init SDL: %s\n", SDL_GetError());
      return 1;
    }
@@ -920,7 +1000,7 @@ index 3bc39053..7b6cec13 100644
    host_report_breadcrumb("SDL init ok: video=%s audio=%s",
                           SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(none)",
                           SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "(none)");
-@@ -3503,7 +4007,27 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3503,7 +4073,27 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
        g_current_window_scale * WindowBaseHeight();
  
    RendererApply(RendererChoice());
@@ -949,7 +1029,7 @@ index 3bc39053..7b6cec13 100644
    if (g_config.output_method == kOutputMethod_OpenGL) {
      g_win_flags |= SDL_WINDOW_OPENGL;
      snesrecomp_opengl_set_vsync(VSyncInterval());
-@@ -3682,8 +4206,12 @@ error_reading:;
+@@ -3682,8 +4272,12 @@ error_reading:;
        g_audio_device = SDL_GetAudioStreamDevice(g_audio_stream);
        SDL_GetAudioStreamFormat(g_audio_stream, &have, NULL);
      }
@@ -962,7 +1042,19 @@ index 3bc39053..7b6cec13 100644
      want.callback = &AudioCallback;
      g_audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
  #endif
-@@ -3837,6 +4365,12 @@ error_reading:;
+@@ -3785,6 +4379,11 @@ error_reading:;
+     const char *v = HostGetenv("OSD_FPS");
+     if ((v && atoi(v)) || g_config.display_perf_title) snes_osd_set_fps_visible(1);
+   }
++#ifdef __WEBOS__
++  profile_requested = true;
++  profile_first = 1;
++  snes_osd_set_fps_visible(1);
++#endif
+   g_state_generation = RtlStateGeneration();
+ 
+   snes_savestate_menu_set_compose(ComposeStateThumbnail);
+@@ -3837,6 +4436,12 @@ error_reading:;
            g_netplay_exit_requested = 1;
            break;
          }
@@ -975,7 +1067,7 @@ index 3bc39053..7b6cec13 100644
  #endif
          HandleInput(SNESRECOMP_SDL_EVENT_KEY(event),
                      SNESRECOMP_SDL_EVENT_MOD(event), true);
-@@ -4149,6 +4683,33 @@ error_reading:;
+@@ -4149,6 +4754,33 @@ error_reading:;
          g_open_launcher_hotkey = 1;
        }
      }
@@ -1009,7 +1101,17 @@ index 3bc39053..7b6cec13 100644
      if (game->in_game_launcher &&
          (g_open_launcher_hotkey || PadGesturePressed(&g_launcher_gesture)) &&
          !snes_rewind_is_open() && !snes_savestate_menu_is_open()) {
-@@ -4313,6 +4874,12 @@ error_reading:;
+@@ -4278,6 +4910,9 @@ error_reading:;
+       ++presentations;
+       snes_host_clock_presentation_done(&video_clock, presented_at);
+     }
++#ifdef __WEBOS__
++    LogLivePerfTick(frameCtr);
++#endif
+     if (run_frames && frameCtr >= run_frames) {
+       running = false;
+       exit_reason = "RUN_FRAMES reached";
+@@ -4313,6 +4948,12 @@ error_reading:;
        run_end > run_start ? frameCtr / (run_end - run_start) : 0,
        run_cpu_start >= 0 && run_cpu_end >= run_cpu_start
            ? run_cpu_end - run_cpu_start : -1);
@@ -1022,7 +1124,7 @@ index 3bc39053..7b6cec13 100644
    if (g_profile) {
      double profile_seconds = run_end - profile_window_start;
      host_report_breadcrumb("video profile window: first=%u last=%u seconds=%.6f presentations=%u",
-@@ -4353,6 +4920,9 @@ error_reading:;
+@@ -4353,6 +4994,9 @@ error_reading:;
    if (g_blend) recomp_frame_blend_destroy(g_blend);
  #endif
  
@@ -1032,7 +1134,7 @@ index 3bc39053..7b6cec13 100644
    if (game->on_shutdown) game->on_shutdown();
  
    // clean sdl
-@@ -4403,10 +4973,18 @@ error_reading:;
+@@ -4403,10 +5047,18 @@ error_reading:;
   * to draw a second one -- bare white digits in the frame's corner -- so a
   * player who pressed the key saw two counters that disagreed. */
  
@@ -1052,7 +1154,7 @@ index 3bc39053..7b6cec13 100644
    uint32 p2 = g_config.player_src[1] == 1 ? keybinds_read_player_runner(keys, 2) : 0;
    g_input_state = p1 | (p2 << 12);
    for (int seat = 2; seat < kSnesHostPadSeats; ++seat)
-@@ -4539,7 +5117,7 @@ static void RequestScreenshot(void) {
+@@ -4539,7 +5191,7 @@ static void RequestScreenshot(void) {
      return;
    s_last_screenshot_time = now;
  
@@ -1061,7 +1163,7 @@ index 3bc39053..7b6cec13 100644
    fprintf(stderr, "Screenshots require the desktop OpenGL backend.\n");
  #else
    if (g_config.output_method != kOutputMethod_OpenGL) {
-@@ -4553,7 +5131,8 @@ static void RequestScreenshot(void) {
+@@ -4553,7 +5205,8 @@ static void RequestScreenshot(void) {
  
  static uint32 GetActiveControllers(void) {
    uint32 ctrl = g_script_controllers |
@@ -1071,7 +1173,7 @@ index 3bc39053..7b6cec13 100644
                  (g_config.player_src[1] == 1 ? 2u : 0u);
    ctrl |= g_gamepad[0].joystick_id != -1 ? 1 : 0;
    ctrl |= g_gamepad[1].joystick_id != -1 ? 2 : 0;
-@@ -4815,6 +5394,9 @@ static const char kDefaultConfigIniContent[] =
+@@ -4815,6 +5468,9 @@ static const char kDefaultConfigIniContent[] =
    "# Don't keep the aspect ratio\n"
    "IgnoreAspectRatio = 0\n"
    "\n"
@@ -2229,10 +2331,18 @@ index 81512133..850c6856 100644
  
  Interp816 *interp816_init(void *mem, Interp816ReadHandler read,
 diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
-index c1e48ebb..c0751a40 100644
+index c1e48ebb..9543197c 100644
 --- a/runner/src/snes/interp_bridge.c
 +++ b/runner/src/snes/interp_bridge.c
-@@ -61,7 +61,7 @@ static uint64_t bridge_bounce_flush_thresh(void) {
+@@ -15,6 +15,7 @@
+ #include "cx4.h"
+ #include "sa1.h"
+ #include "sdd1.h"
++#include "cart.h"
+ #include "debug_server.h"
+ #include "common_rtl.h"
+ #include "cosim.h"  /* cosim_insn — instruction-granular lockstep (no-op unless SNES_COSIM) */
+@@ -61,11 +62,96 @@ static uint64_t bridge_bounce_flush_thresh(void) {
      static int64_t s_t = -1;
      if (s_t < 0) {
          const char *e = getenv("SNESRECOMP_LLE_APU_FLUSH_THRESH");
@@ -2241,7 +2351,96 @@ index c1e48ebb..c0751a40 100644
          if (s_t < 0) s_t = 0;
      }
      return (uint64_t)s_t;
-@@ -87,6 +87,7 @@ static void bridge_apu_flush(CpuState *cpu) {
+ }
++#ifdef __WEBOS__
++typedef struct {
++    uint32_t pc;
++    uint32_t count;
++} WebosPcSample;
++static WebosPcSample s_webos_pc_samples[32];
++
++void interp_bridge_get_top_pcs(char *buf, size_t max_len) {
++    int top[3] = {-1, -1, -1};
++    for (int i = 0; i < 32; i++) {
++        if (!s_webos_pc_samples[i].count) continue;
++        if (top[0] == -1 || s_webos_pc_samples[i].count > s_webos_pc_samples[top[0]].count) {
++            top[2] = top[1]; top[1] = top[0]; top[0] = i;
++        } else if (top[1] == -1 || s_webos_pc_samples[i].count > s_webos_pc_samples[top[1]].count) {
++            top[2] = top[1]; top[1] = i;
++        } else if (top[2] == -1 || s_webos_pc_samples[i].count > s_webos_pc_samples[top[2]].count) {
++            top[2] = i;
++        }
++    }
++    size_t off = 0;
++    off += snprintf(buf + off, max_len - off, "top_pc=");
++    for (int k = 0; k < 3; k++) {
++        if (top[k] >= 0 && off < max_len) {
++            uint32_t p = s_webos_pc_samples[top[k]].pc;
++            off += snprintf(buf + off, max_len - off, "%s$%02X:%04X(%u)",
++                            k > 0 ? "," : "", (p >> 16) & 0xFF, p & 0xFFFF, s_webos_pc_samples[top[k]].count);
++        }
++    }
++    memset(s_webos_pc_samples, 0, sizeof(s_webos_pc_samples));
++}
++
++extern uint64_t g_interp_bridge_write_epoch;
++
++static void fast_character_menu_sprites_inner(CpuState *cpu, Interp816 *in) {
++    if (!g_snes || !g_snes->cart) return;
++    const uint8_t *table1 = cart_getRomPtr(g_snes->cart, 0x00, 0xA1A7);
++    const uint8_t *table2 = cart_getRomPtr(g_snes->cart, 0x00, 0xA248);
++    if (!table1 || !table2) return;
++
++    uint8_t *ram = cpu->ram;
++
++    // Loop 1 ($A127):
++    uint16_t y = 0;
++    uint16_t x2 = 0;
++    while (1) {
++        uint8_t val = table1[x2];
++        if (val == 0xFF) break;
++        ram[0x0800 + y] = (uint8_t)(val - 0x08);
++        ram[0x0801 + y] = table1[x2 + 1];
++        ram[0x0802 + y] = table1[x2 + 2];
++        ram[0x0803 + y] = table1[x2 + 3];
++        uint8_t x0 = ram[0x00];
++        ram[0x0A20 + x0] = 0x02;
++        y += 4;
++        ram[0x00] = (uint8_t)(x0 + 1);
++        x2 += 4;
++    }
++
++    // Between loops ($A163):
++    ram[0x02] = 0;
++    ram[0x03] = 0;
++    y += 4;
++    ram[0x00] = (uint8_t)(ram[0x00] + 1);
++
++    // Loop 2 ($A16F):
++    x2 = 0;
++    while (1) {
++        uint8_t val = table2[x2];
++        if (val == 0xFF) break;
++        ram[0x0800 + y] = (uint8_t)(val - 0x08);
++        ram[0x0801 + y] = table2[x2 + 1];
++        ram[0x0802 + y] = table2[x2 + 2];
++        ram[0x0803 + y] = table2[x2 + 3];
++        uint8_t x0 = ram[0x00];
++        ram[0x0A20 + x0] = 0x00;
++        x2 += 4;
++        y += 4;
++        ram[0x00] = (uint8_t)(x0 + 1);
++    }
++
++    // Jump straight to function exit at $A1A5 (which executes SEP #$10; PLB; RTS natively)
++    in->pc = 0xA1A5u;
++    g_interp_bridge_write_epoch++;
++}
++#endif
+ #ifdef SNESRECOMP_INTERP_PROFILE
+ #include <time.h>
+ uint64_t apu_prof_calls = 0;
+@@ -87,6 +173,7 @@ static void bridge_apu_flush(CpuState *cpu) {
        apu_prof_calls++; }
      clock_t _t0 = clock();
  #endif
@@ -2249,7 +2448,7 @@ index c1e48ebb..c0751a40 100644
      if (interp_bridge_use_absolute_apu_timeline(
              rtl_apu_frame_timeline_active(),
              g_snes && cart_has_sa1(g_snes->cart),
-@@ -200,7 +201,7 @@ static int bridge_continuous_read(uint32_t adr) {
+@@ -200,7 +287,7 @@ static int bridge_continuous_read(uint32_t adr) {
      /* Zero-page and direct-page reads are used by S-DD1 decompression
       * loops and other game logic that must not be mistaken for quiescent
       * polling.  Mark them dynamic so the epoch advances. */
@@ -2258,7 +2457,7 @@ index c1e48ebb..c0751a40 100644
      if (a>=0x2134 && a<0x2180) return 1;       /* PPU counters + APU ports */
      if (a>=0x3000 && a<0x3300) return 1;       /* GSU registers/cache */
      if (a==0x4016 || a==0x4017 || a==0x4212) return 1;
-@@ -226,6 +227,26 @@ static int bridge_read_is_stable(uint32_t adr) {
+@@ -226,6 +313,26 @@ static int bridge_read_is_stable(uint32_t adr) {
  
  static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
      CpuState *cpu = (CpuState *)mem;
@@ -2285,7 +2484,28 @@ index c1e48ebb..c0751a40 100644
      bridge_timing_bus(adr);
      if (!bridge_read_is_stable(adr)) s_interp_volatile_read_epoch++;
      int continuous=bridge_continuous_read(adr);
-@@ -609,7 +630,8 @@ static int      s_interp_bounce_recomp_base = -1;
+@@ -288,11 +395,6 @@ static void bridge_bus_write(void *mem, uint32_t adr, uint8_t val) {
+     }
+     if (is_apu_port) bridge_apu_flush(cpu);
+     cpu_write8(cpu, (uint8)((adr >> 16) & 0xFF), (uint16)(adr & 0xFFFF), val);
+-    /* Re-sync the SPC after the port write so it can see the new data.
+-     * bridge_apu_flush above consumed s_apu_pending_master, so calling it
+-     * again would be a no-op.  Instead advance the SPC directly so the
+-     * IPL loop can read the just-written port value (Star Ocean SPC700
+-     * upload handshake: writes to $2140-$2143, polls $2140 for $6B). */
+     if (is_apu_port && g_snes && g_snes->apu) {
+         RtlApuLock();
+         rtl_sync_apu_to_cpu_locked();
+@@ -374,8 +476,6 @@ static bool bridge_bus_write_word(void *mem, uint32_t adrl, uint32_t adrh,
+     }
+     if (is_apu_port) bridge_apu_flush(cpu);
+     cpu_write16(cpu, (uint8)((adrl >> 16) & 0xFF), (uint16)(adrl & 0xFFFF), val);
+-    /* Re-sync SPC after port write so it can see the new data (same as
+-     * bridge_bus_write byte path). */
+     if (is_apu_port && g_snes && g_snes->apu) {
+         RtlApuLock();
+         rtl_sync_apu_to_cpu_locked();
+@@ -609,7 +709,8 @@ static int      s_interp_bounce_recomp_base = -1;
   * never a stale interpreter PC. Always published -- one store per step, next
   * to the step ring's -- so attribution never depends on what was armed. */
  uint32_t g_interp_wlog_pc24 = 0;
@@ -2295,7 +2515,7 @@ index c1e48ebb..c0751a40 100644
  static size_t   s_lle_bounce_exclusion_count;
  
  /* Debug lever (SNESRECOMP_LLE_INTERP_TARGET_FILE): a file of hex PC24s, one per
-@@ -1246,6 +1268,10 @@ static uint8_t interp_edge_kind_for_op(uint8_t op) {
+@@ -1246,6 +1347,10 @@ static uint8_t interp_edge_kind_for_op(uint8_t op) {
  
  static void interp_edge_note(uint32_t from_pc24, uint32_t to_pc24,
                               uint8_t kind, uint8_t op, uint16_t sp) {
@@ -2306,7 +2526,7 @@ index c1e48ebb..c0751a40 100644
      extern int snes_frame_counter;
      from_pc24 &= 0xFFFFFFu;
      to_pc24 &= 0xFFFFFFu;
-@@ -1269,6 +1295,7 @@ static void interp_edge_note(uint32_t from_pc24, uint32_t to_pc24,
+@@ -1269,6 +1374,7 @@ static void interp_edge_note(uint32_t from_pc24, uint32_t to_pc24,
      e->kind = kind;
      e->op = op;
      g_interp_edges_n = n + 1;
@@ -2314,7 +2534,7 @@ index c1e48ebb..c0751a40 100644
  }
  
  uint64_t interp_bridge_edge_total(void) { return g_interp_edges_n; }
-@@ -1491,6 +1518,11 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1491,6 +1597,11 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
      in.read_word = bridge_bus_read_word;
      in.write_word = bridge_bus_write_word;
      in.brkHookEnabled = true;
@@ -2326,7 +2546,7 @@ index c1e48ebb..c0751a40 100644
      const int wlog_state_sync = getenv("SNESRECOMP_WLOG_STATE") != NULL;
  
      sync_cpu_to_interp(cpu, &in);
-@@ -1544,7 +1576,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1544,7 +1655,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
  
      typedef struct QuiescentState {
          uint32_t pc;
@@ -2336,7 +2556,7 @@ index c1e48ebb..c0751a40 100644
          uint8_t db, k, c, z, v, n, i, d, mf, xf, e;
          uint64_t write_epoch;
          uint64_t continuous_read_epoch;
-@@ -1553,6 +1586,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1553,6 +1665,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
      } QuiescentState;
      QuiescentState qring[64];
      memset(qring, 0, sizeof qring);
@@ -2344,7 +2564,7 @@ index c1e48ebb..c0751a40 100644
      /* Stable-poll detector state: the architectural state at the last few
       * loop heads this frame branched back to (see the detector below). */
      typedef struct PollHeadState {
-@@ -1627,6 +1661,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1627,6 +1740,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
            if (pct && (steps % pct) == 0)
              fprintf(stderr, "[pctrace] step=%ld pc=%06X op=%02X\n", steps,
                      (unsigned)pc_before, bridge_bus_read(cpu, pc_before)); }
@@ -2352,7 +2572,7 @@ index c1e48ebb..c0751a40 100644
  #if SNESRECOMP_REVERSE_DEBUG
          /* The reverse debugger must observe whichever execution tier owns the
           * next guest instruction. AOT blocks arrive through cpu_trace_block;
-@@ -1643,17 +1678,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1643,17 +1757,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the CPU H/V comparator or a coprocessor asserts IRQ; otherwise a
           * perfectly live hardware-poll loop can monopolize the bridge and
           * starve the handler forever. */
@@ -2375,7 +2595,7 @@ index c1e48ebb..c0751a40 100644
              lle_resume_set(pc_before, INTERP_RESUME_SITE_IRQ_PENDING, in.sp);
              sync_interp_to_cpu(&in,cpu);
              bridge_apu_flush(cpu);
-@@ -1670,9 +1700,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1670,9 +1779,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the wait; it executes the LDA $00D9 / BEQ loop with the same master
           * timing and IRQ/deadline sampling, but avoids the full interpreter bus
           * dispatch overhead in the battle vIRQ case. */
@@ -2387,7 +2607,7 @@ index c1e48ebb..c0751a40 100644
              g_snes->vIrqEnabled && g_snes->vTimer == 216u) {
              static int s_d9_bytes_ok = -1;
              if (s_d9_bytes_ok < 0) {
-@@ -1761,6 +1791,28 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1761,6 +1870,28 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                  continue;
              }
          }
@@ -2416,7 +2636,7 @@ index c1e48ebb..c0751a40 100644
          /* --- Star Ocean vblank-spin fast-forward ---
           * The game has several copies of the same beam-wait routine: the
           * main loop ($C8:F40F/F414/F425/F42A), battle engine ($CC:0538/3D/4E/53),
-@@ -1773,7 +1825,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1773,7 +1904,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * equals the sum of per-opcode advances), so jumping the beam to
           * the natural exit point and flushing the skipped SPC time is
           * state-exact. Disabled with SNESRECOMP_NO_VBLANK_FF=1. */
@@ -2426,7 +2646,7 @@ index c1e48ebb..c0751a40 100644
              ((pc_before == 0xC8F425u || pc_before == 0xC8F42Au ||
                pc_before == 0xC8F40Fu || pc_before == 0xC8F414u ||
                pc_before == 0xCC0538u || pc_before == 0xCC053Du ||
-@@ -1926,52 +1979,48 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1926,52 +2058,48 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              }
          }
          if (auto_quiescent) {
@@ -2518,7 +2738,7 @@ index c1e48ebb..c0751a40 100644
          }
          if (s_pre_opcode_hook_count > 0) {
              const uint32_t key = pc_before & 0x7FFFFFu;
-@@ -2261,164 +2310,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2261,164 +2389,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                  }
              }
          }
@@ -2683,11 +2903,43 @@ index c1e48ebb..c0751a40 100644
          const uint8_t coverage_mx = (uint8_t)((in.mf << 1) | in.xf);
          const uint8_t coverage_e = in.e;
          const uint16_t dp_before = in.dp;
-@@ -2442,6 +2333,19 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2441,7 +2411,51 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+         if (g_interp_bridge_pc_hook)
              g_interp_bridge_pc_hook(pc_before & 0xFFFFFFu,
                                      in.mf ? 1 : 0, in.xf ? 1 : 0);
++#ifdef __WEBOS__
++        if (__builtin_expect((pc_before & 0xFFFFFFu) == 0x00A127u, 0)) {
++            fast_character_menu_sprites_inner(cpu, &in);
++            cpu->master_cycles += 40;
++            g_interp_bridge_steps++;
++            continue;
++        }
++        if (__builtin_expect((pc_before == 0x20F380u || pc_before == 0x20F383u ||
++                              pc_before == 0x20F398u || pc_before == 0x20F39Bu), 0)) {
++            if (g_snes && g_snes->hPos < 1024) {
++                uint32_t step = 1024 - g_snes->hPos;
++                if (step > 256) step = 256;
++                cpu->master_cycles += step;
++                snes_sync_master_clock(g_snes, cpu->master_cycles);
++                s_apu_pending_master += step;
++            }
++        }
++#endif
          int _cyc = interp816_runOpcode(&in);   /* executes the opcode; pushes/pops frames */
 +        const uint8_t op = in.last_opcode;
++#ifdef __WEBOS__
++        {
++            uint32_t slot = (pc_before ^ (pc_before >> 4) ^ (pc_before >> 12)) & 31;
++            if (s_webos_pc_samples[slot].pc == pc_before) {
++                s_webos_pc_samples[slot].count++;
++            } else if (s_webos_pc_samples[slot].count == 0) {
++                s_webos_pc_samples[slot].pc = pc_before;
++                s_webos_pc_samples[slot].count = 1;
++            } else {
++                s_webos_pc_samples[slot].count--;
++            }
++        }
++#endif
 +        if (itn < 8) {
 +            head[itn].pc = pc_before;
 +            head[itn].op = op;
@@ -2703,7 +2955,7 @@ index c1e48ebb..c0751a40 100644
          if (s_interp_pctrace && steps < 4)
              fprintf(stderr, "[pctrace] step=%ld post-runOpcode cyc=%d pc=%02X:%04X\n",
                      steps, _cyc, in.k, in.pc);
-@@ -2479,8 +2383,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2479,8 +2493,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               * WatchdogCheck charge; see common_cpu_infra.c. */
              snes_refresh_charge();
              cpu->coprocessor_master_cycles = cpu->master_cycles;
@@ -2719,7 +2971,7 @@ index c1e48ebb..c0751a40 100644
                  cart_sync_coprocessors(g_snes->cart, cpu->master_cycles);
  #ifdef SNES_COSIM
              /* Shared APU clock (common_rtl.h): the guest-time advance is a
-@@ -2494,10 +2403,14 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2494,10 +2513,14 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              {
                  /* Guest-time APU, batched (see bridge_apu_flush): accumulate;
                   * convert on APU-port access / ~4096 master / exits. */
@@ -2738,7 +2990,7 @@ index c1e48ebb..c0751a40 100644
                      s_apu_pending_master += _master;
                      if (s_apu_pending_master >= bridge_bounce_flush_thresh()) bridge_apu_flush(cpu);
                  }
-@@ -2536,12 +2449,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2536,12 +2559,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               progress_dynamic_epoch != s_interp_dynamic_progress_epoch)) {
              progress_write_epoch=g_interp_bridge_write_epoch;
              progress_dynamic_epoch=s_interp_dynamic_progress_epoch;
@@ -2751,7 +3003,7 @@ index c1e48ebb..c0751a40 100644
              steps=0;
          }
  
-@@ -2589,7 +2496,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2589,7 +2606,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * never bounced (no return-frame contract), so without this record
           * they leave no trail at all. JMP (abs)=$6C, JMP (abs,X)=$7C,
           * JML [abs]=$DC. */
@@ -2760,7 +3012,7 @@ index c1e48ebb..c0751a40 100644
              const uint32_t landing = ((uint32_t)in.k << 16) | in.pc;
              sync_interp_to_cpu(&in, cpu);   /* live (m,x) for the probe */
              if (!cpu_dispatch_has_entry(cpu, landing))
-@@ -2603,6 +2510,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2603,6 +2620,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               * the current (m,x), run it compiled. */
              sync_interp_to_cpu(&in, cpu);          /* expose (m,x) + frame to AOT */
              const uint32_t target = ((uint32_t)in.k << 16) | in.pc;
