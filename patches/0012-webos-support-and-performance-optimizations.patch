@@ -15,10 +15,10 @@ index a95cc696..0a6fdf2f 100644
      # Run-ahead and rewind are the host's (snes_runahead.c, snes_rewind.c,
      # on the runtime's own snapshot API) and need no extra library. The
 diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
-index d6086b35..38b0c910 100644
+index d6086b35..c22fd612 100644
 --- a/runner/src/beam_frame_driver.c
 +++ b/runner/src/beam_frame_driver.c
-@@ -170,7 +170,16 @@ void snes_beam_frame_driver_run_frame(void) {
+@@ -170,11 +170,20 @@ void snes_beam_frame_driver_run_frame(void) {
      if (s_wai_halted && irq_line_asserted())
        s_wai_halted = false;
      if (!s_wai_halted && !irq_wanted()) {
@@ -36,6 +36,11 @@ index d6086b35..38b0c910 100644
        (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
        interp_bridge_set_master_deadline(0);
        update_resume_pc();
+-      if (interp_bridge_lle_took_wai())
++      if (interp_bridge_lle_took_wai() || interp_bridge_lle_took_quiescent())
+         s_wai_halted = true;
+     }
+     /* Past the boundary, an interrupt belongs to the next frame. Delivering
 @@ -245,10 +254,15 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
     * the beam must not also step it from inside guest register writes. */
    snes_set_hdma_beam_enabled(g_snes, false);
@@ -198,7 +203,7 @@ index c2a9529f..4a2818c8 100644
  }
  
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3bc39053..5498ab3c 100644
+index 3bc39053..7b6cec13 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
 @@ -85,6 +85,10 @@
@@ -950,7 +955,7 @@ index 3bc39053..5498ab3c 100644
      }
 +#else
 +#ifdef __WEBOS__
-+    want.samples = 2048;
++    want.samples = 512;
  #else
      want.samples = g_config.audio_samples;
 +#endif
@@ -2224,7 +2229,7 @@ index 81512133..850c6856 100644
  
  Interp816 *interp816_init(void *mem, Interp816ReadHandler read,
 diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
-index c1e48ebb..654496bf 100644
+index c1e48ebb..c0751a40 100644
 --- a/runner/src/snes/interp_bridge.c
 +++ b/runner/src/snes/interp_bridge.c
 @@ -61,7 +61,7 @@ static uint64_t bridge_bounce_flush_thresh(void) {
@@ -2244,6 +2249,15 @@ index c1e48ebb..654496bf 100644
      if (interp_bridge_use_absolute_apu_timeline(
              rtl_apu_frame_timeline_active(),
              g_snes && cart_has_sa1(g_snes->cart),
+@@ -200,7 +201,7 @@ static int bridge_continuous_read(uint32_t adr) {
+     /* Zero-page and direct-page reads are used by S-DD1 decompression
+      * loops and other game logic that must not be mistaken for quiescent
+      * polling.  Mark them dynamic so the epoch advances. */
+-    if (a < 0x2000) return 1;
++    if (a < 0x2000 && g_snes && g_snes->cart && g_snes->cart->type == CART_SDD1) return 1;
+     if (a>=0x2134 && a<0x2180) return 1;       /* PPU counters + APU ports */
+     if (a>=0x3000 && a<0x3300) return 1;       /* GSU registers/cache */
+     if (a==0x4016 || a==0x4017 || a==0x4212) return 1;
 @@ -226,6 +227,26 @@ static int bridge_read_is_stable(uint32_t adr) {
  
  static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
@@ -2330,7 +2344,15 @@ index c1e48ebb..654496bf 100644
      /* Stable-poll detector state: the architectural state at the last few
       * loop heads this frame branched back to (see the detector below). */
      typedef struct PollHeadState {
-@@ -1643,17 +1677,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1627,6 +1661,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+           if (pct && (steps % pct) == 0)
+             fprintf(stderr, "[pctrace] step=%ld pc=%06X op=%02X\n", steps,
+                     (unsigned)pc_before, bridge_bus_read(cpu, pc_before)); }
++
+ #if SNESRECOMP_REVERSE_DEBUG
+         /* The reverse debugger must observe whichever execution tier owns the
+          * next guest instruction. AOT blocks arrive through cpu_trace_block;
+@@ -1643,17 +1678,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the CPU H/V comparator or a coprocessor asserts IRQ; otherwise a
           * perfectly live hardware-poll loop can monopolize the bridge and
           * starve the handler forever. */
@@ -2353,7 +2375,7 @@ index c1e48ebb..654496bf 100644
              lle_resume_set(pc_before, INTERP_RESUME_SITE_IRQ_PENDING, in.sp);
              sync_interp_to_cpu(&in,cpu);
              bridge_apu_flush(cpu);
-@@ -1670,9 +1699,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1670,9 +1700,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * the wait; it executes the LDA $00D9 / BEQ loop with the same master
           * timing and IRQ/deadline sampling, but avoids the full interpreter bus
           * dispatch overhead in the battle vIRQ case. */
@@ -2365,7 +2387,36 @@ index c1e48ebb..654496bf 100644
              g_snes->vIrqEnabled && g_snes->vTimer == 216u) {
              static int s_d9_bytes_ok = -1;
              if (s_d9_bytes_ok < 0) {
-@@ -1773,7 +1802,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1761,6 +1791,28 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                 continue;
+             }
+         }
++        /* Super Mario All-Stars APU transfer handshake acceleration ($00:8BB5, $00:8BCD, $00:8BDD, $00:8C06).
++         * The 65816 CPU polls APU port 0 ($2140) for the SPC700 acknowledgment:
++         *   CMP $2140 ; BNE loop
++         * Stepping in single-opcode (16 master cycle) increments causes thousands of pthread mutex locks
++         * against the audio callback thread per frame, causing audio stuttering and dropping frame rate.
++         * By stepping master clock and APU by 192 master cycles (~9 APU cycles) when the port has not
++         * acknowledged yet, the SPC completes its handshake in 1-2 steps instead of 40-50 steps. */
++        if (__builtin_expect((pc_before & 0x7F0000u) == 0 &&
++                             (pc_before & 0xFFFFu) >= 0x8BB5u && (pc_before & 0xFFFFu) <= 0x8C06u, 0)) {
++            if ((in.pc == 0x8BB5u || in.pc == 0x8BCDu || in.pc == 0x8BDDu || in.pc == 0x8C06u)) {
++                uint8_t apu_val = cpu_read8(cpu, 0x00, 0x2140);
++                if (apu_val != (uint8_t)(in.a & 0xFF)) {
++                    const uint64_t step_master = 480;
++                    cpu->cycles += (step_master / 6);
++                    cpu->master_cycles += step_master;
++                    s_apu_pending_master += step_master;
++                    bridge_apu_flush(cpu);
++                    if (g_snes) snes_sync_master_clock(g_snes, cpu->master_cycles);
++                    continue;
++                }
++            }
++        }
+         /* --- Star Ocean vblank-spin fast-forward ---
+          * The game has several copies of the same beam-wait routine: the
+          * main loop ($C8:F40F/F414/F425/F42A), battle engine ($CC:0538/3D/4E/53),
+@@ -1773,7 +1825,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * equals the sum of per-opcode advances), so jumping the beam to
           * the natural exit point and flushing the skipped SPC time is
           * state-exact. Disabled with SNESRECOMP_NO_VBLANK_FF=1. */
@@ -2375,7 +2426,7 @@ index c1e48ebb..654496bf 100644
              ((pc_before == 0xC8F425u || pc_before == 0xC8F42Au ||
                pc_before == 0xC8F40Fu || pc_before == 0xC8F414u ||
                pc_before == 0xCC0538u || pc_before == 0xCC053Du ||
-@@ -1926,52 +1956,47 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -1926,52 +1979,48 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              }
          }
          if (auto_quiescent) {
@@ -2424,9 +2475,10 @@ index c1e48ebb..654496bf 100644
 +            unsigned int prev_repeats = 0;
 +            const uint32_t cur_hash = in.a ^ ((uint32_t)in.x << 16) ^ ((uint32_t)in.y << 8) ^ (uint32_t)in.sp;
 +            if (__builtin_expect((q_pc_filter & bit) != 0, 0)) {
-+                for (unsigned qi = 0; qi < 64; qi++) {
++                for (unsigned offset = 1; offset <= 64; offset++) {
++                    unsigned qi = (steps - offset) & 63;
 +                    QuiescentState *old = &qring[qi];
-+                    if (old->pc == pc_before && old->reg_hash == cur_hash && old->step && (steps - old->step <= 256) &&
++                    if (old->pc == pc_before && old->reg_hash == cur_hash && (steps - old->step <= 256) &&
 +                        old->dp == in.dp && old->db == in.db &&
 +                        old->k == in.k && old->c == in.c && old->z == in.z &&
 +                        old->v == in.v && old->n == in.n && old->i == in.i &&
@@ -2466,7 +2518,7 @@ index c1e48ebb..654496bf 100644
          }
          if (s_pre_opcode_hook_count > 0) {
              const uint32_t key = pc_before & 0x7FFFFFu;
-@@ -2261,164 +2286,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2261,164 +2310,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                  }
              }
          }
@@ -2631,7 +2683,7 @@ index c1e48ebb..654496bf 100644
          const uint8_t coverage_mx = (uint8_t)((in.mf << 1) | in.xf);
          const uint8_t coverage_e = in.e;
          const uint16_t dp_before = in.dp;
-@@ -2442,6 +2309,19 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2442,6 +2333,19 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              g_interp_bridge_pc_hook(pc_before & 0xFFFFFFu,
                                      in.mf ? 1 : 0, in.xf ? 1 : 0);
          int _cyc = interp816_runOpcode(&in);   /* executes the opcode; pushes/pops frames */
@@ -2651,7 +2703,7 @@ index c1e48ebb..654496bf 100644
          if (s_interp_pctrace && steps < 4)
              fprintf(stderr, "[pctrace] step=%ld post-runOpcode cyc=%d pc=%02X:%04X\n",
                      steps, _cyc, in.k, in.pc);
-@@ -2479,8 +2359,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2479,8 +2383,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               * WatchdogCheck charge; see common_cpu_infra.c. */
              snes_refresh_charge();
              cpu->coprocessor_master_cycles = cpu->master_cycles;
@@ -2667,7 +2719,7 @@ index c1e48ebb..654496bf 100644
                  cart_sync_coprocessors(g_snes->cart, cpu->master_cycles);
  #ifdef SNES_COSIM
              /* Shared APU clock (common_rtl.h): the guest-time advance is a
-@@ -2494,10 +2379,14 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2494,10 +2403,14 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
              {
                  /* Guest-time APU, batched (see bridge_apu_flush): accumulate;
                   * convert on APU-port access / ~4096 master / exits. */
@@ -2686,7 +2738,7 @@ index c1e48ebb..654496bf 100644
                      s_apu_pending_master += _master;
                      if (s_apu_pending_master >= bridge_bounce_flush_thresh()) bridge_apu_flush(cpu);
                  }
-@@ -2536,12 +2425,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2536,12 +2449,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               progress_dynamic_epoch != s_interp_dynamic_progress_epoch)) {
              progress_write_epoch=g_interp_bridge_write_epoch;
              progress_dynamic_epoch=s_interp_dynamic_progress_epoch;
@@ -2699,7 +2751,7 @@ index c1e48ebb..654496bf 100644
              steps=0;
          }
  
-@@ -2589,7 +2472,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2589,7 +2496,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
           * never bounced (no return-frame contract), so without this record
           * they leave no trail at all. JMP (abs)=$6C, JMP (abs,X)=$7C,
           * JML [abs]=$DC. */
@@ -2708,7 +2760,7 @@ index c1e48ebb..654496bf 100644
              const uint32_t landing = ((uint32_t)in.k << 16) | in.pc;
              sync_interp_to_cpu(&in, cpu);   /* live (m,x) for the probe */
              if (!cpu_dispatch_has_entry(cpu, landing))
-@@ -2603,6 +2486,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+@@ -2603,6 +2510,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               * the current (m,x), run it compiled. */
              sync_interp_to_cpu(&in, cpu);          /* expose (m,x) + frame to AOT */
              const uint32_t target = ((uint32_t)in.k << 16) | in.pc;
